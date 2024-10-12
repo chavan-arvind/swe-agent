@@ -26,8 +26,7 @@ ENV/
 ehthumbs.db
 Thumbs.db
 
-# Logs
-*.log
+
 
 # Distribution / packaging
 .Python
