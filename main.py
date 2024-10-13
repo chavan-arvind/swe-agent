@@ -8,7 +8,7 @@ from src.github_utils import (
     setup_codespace_for_testing,
     get_repo_structure
 )
-from src.openai_utils import setup_openai_client, plan_issue_resolution
+from src.openai_utils import setup_openai_client, plan_issue_resolution, determine_project_type
 from src.file_utils import get_local_repo_structure, save_repo_structure, get_file_content
 from src.models import ResolutionPlan
 from src.issue_resolution import parse_ai_response, modify_files, create_pull_request
@@ -66,34 +66,31 @@ def get_or_fetch_repo_structure(github_client, repo_name):
     return get_repo_structure(github_client, repo_name)
 
 def find_relevant_files(repo, issue_title, issue_body):
-    """Find files that might be relevant to the issue based on keywords."""
-    keywords = set(issue_title.lower().split())
-    if issue_body:
-        keywords.update(issue_body.lower().split())
-    relevant_files = []
+    """Find files that might be relevant to the issue, focusing on API and test files."""
+    api_files = []
+    test_files = []
     contents = repo.get_contents("")
-    
-    print(f"Searching for files with keywords: {keywords}")
     
     def traverse_contents(contents):
         for content in contents:
             if content.type == "dir":
                 traverse_contents(repo.get_contents(content.path))
             elif content.type == "file":
-                file_name = content.name.lower()
                 file_path = content.path.lower()
-                if any(keyword in file_name or keyword in file_path for keyword in keywords):
-                    relevant_files.append(content.path)
-                    print(f"Found relevant file: {content.path}")
+                if file_path.endswith(('.py', '.js', '.ts', '.cs')):
+                    if 'test' in file_path or 'spec' in file_path:
+                        test_files.append(content.path)
+                    elif any(keyword in file_path for keyword in ['api', 'route', 'endpoint', 'controller']):
+                        api_files.append(content.path)
     
     traverse_contents(contents)
     
-    if not relevant_files:
-        print("No relevant files found. Including all Python files.")
-        traverse_contents(repo.get_contents(""))
-        relevant_files = [content.path for content in contents if content.name.endswith('.py')]
+    if not api_files and not test_files:
+        print("No API or test files found. Including all Python files.")
+        api_files = [content.path for content in repo.get_contents("") if content.path.endswith('.py')]
     
-    return relevant_files
+    print(f"Found {len(api_files)} API-related files and {len(test_files)} test files.")
+    return api_files + test_files
 
 def analyze_relevant_files(repo, relevant_files, max_file_size=100000):  # 100 KB limit
     """Analyze the content of relevant files."""
@@ -172,6 +169,9 @@ def main():
         for file_path in file_contents.keys():
             print(f"- {file_path}")
 
+        project_type = determine_project_type(file_contents.keys())
+        print(f"\nDetected project type: {project_type}")
+
         print(f"\nGenerating resolution plan for: {selected_issue.title}")
         print("Please wait...\n")
 
@@ -184,16 +184,33 @@ def main():
             # Ask user if they want to proceed with creating a new branch and pull request
             create_pr = input("Do you want to create a new branch and pull request with the proposed changes? (y/n): ").lower().strip()
             if create_pr == 'y':
+                # Check if README.md exists in the repository
+                try:
+                    readme_content = repo.get_contents("README.md").decoded_content.decode('utf-8')
+                    file_contents["README.md"] = readme_content
+                except Exception:
+                    print("README.md not found in the repository. It will be created if necessary.")
+
+                print("\nModifying files based on the resolution plan...")
                 modified_files = modify_files(repo, file_contents, plan)
-                success, message, pr_url = setup_and_update_branch(repo, modified_files, issue_number=selected_issue.number)
-                if success:
-                    print(message)
-                    if pr_url:
-                        print(f"Pull request created: {pr_url}")
-                    else:
-                        print("Pull request creation failed, but branch was created with changes.")
+                if not modified_files:
+                    print("No files were modified. Skipping branch creation and pull request.")
+                    print("\nResolution Plan:")
+                    display_resolution_plan(plan)
+                    print("\nAvailable Files:")
+                    for file_path in file_contents.keys():
+                        print(f"- {file_path}")
                 else:
-                    print(f"Failed to create branch and update files: {message}")
+                    print("\nCreating new branch and pull request...")
+                    success, message, pr_url = setup_and_update_branch(repo, modified_files, issue_number=selected_issue.number)
+                    if success:
+                        print(message)
+                        if pr_url:
+                            print(f"Pull request created: {pr_url}")
+                        else:
+                            print("Pull request creation failed, but branch was created with changes.")
+                    else:
+                        print(f"Failed to create branch and update files: {message}")
             else:
                 print("Branch and pull request creation skipped.")
 

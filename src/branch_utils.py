@@ -17,13 +17,28 @@ def get_github_token():
 def create_branch(repo, base_branch="main", new_branch_prefix="fix-issue-"):
     """Create a new branch in the given repository."""
     try:
-        base_ref = repo.get_git_ref(f"heads/{base_branch}")
+        # First, try to get the default branch if base_branch is not specified
+        if base_branch == "main":
+            base_branch = repo.default_branch
+
+        # Get the latest commit on the base branch
+        base_commit = repo.get_branch(base_branch).commit
+        
+        # Create a new branch name
         new_branch_name = f"{new_branch_prefix}{int(time.time())}"
-        repo.create_git_ref(ref=f"refs/heads/{new_branch_name}", sha=base_ref.object.sha)
+        
+        # Create the new branch
+        repo.create_git_ref(ref=f"refs/heads/{new_branch_name}", sha=base_commit.sha)
+        
         print(f"Created new branch: {new_branch_name}")
         return new_branch_name
     except GithubException as e:
-        print(f"Failed to create branch: {e}")
+        print(f"Failed to create branch. Status: {e.status}, Data: {e.data}")
+        if e.status == 404:
+            print(f"The base branch '{base_branch}' was not found. Please check if it exists in the repository.")
+        return None
+    except Exception as e:
+        print(f"An unexpected error occurred while creating the branch: {str(e)}")
         return None
 
 def update_file(repo, file_path, content, branch, commit_message):
@@ -42,22 +57,43 @@ def update_file(repo, file_path, content, branch, commit_message):
 def create_pull_request(repo, head_branch, base_branch="main", title="", body=""):
     """Create a pull request from the head branch to the base branch."""
     try:
+        # Check if there are any differences between the branches
+        comparison = repo.compare(base_branch, head_branch)
+        if not comparison.files:
+            print(f"No differences found between {base_branch} and {head_branch}. Skipping pull request creation.")
+            return None
+
         pr = repo.create_pull(title=title, body=body, head=head_branch, base=base_branch)
         print(f"Created pull request: {pr.html_url}")
         return pr
     except GithubException as e:
-        print(f"Failed to create pull request: {e}")
+        print(f"Failed to create pull request: {e.status} - {e.data.get('message', '')}")
+        if e.status == 422 and "Validation Failed" in e.data.get('message', ''):
+            print("This might be due to no changes between branches or an invalid base branch.")
         return None
 
 def setup_and_update_branch(repo, modified_files, base_branch="main", issue_number=None):
     """Set up a new branch, update files, and create a pull request."""
     try:
+        # Ensure we're using the correct base branch
+        base_branch = repo.default_branch if base_branch == "main" else base_branch
+        print(f"Using base branch: {base_branch}")
+
         new_branch = create_branch(repo, base_branch)
         if not new_branch:
-            return False, "Failed to create new branch", None
+            return False, "Failed to create new branch. Please check the repository permissions and branch names.", None
 
+        files_updated = False
         for file_path, content in modified_files.items():
-            update_file(repo, file_path, content, new_branch, f"Update {file_path}")
+            try:
+                update_file(repo, file_path, content, new_branch, f"Update {file_path}")
+                files_updated = True
+            except Exception as e:
+                print(f"Failed to update file {file_path}: {str(e)}")
+
+        if not files_updated:
+            print("No files were updated. Skipping pull request creation.")
+            return False, "No files were updated. Changes might already exist in the repository.", None
 
         pr_title = f"Fix for issue #{issue_number}" if issue_number else "Update files"
         pr_body = f"This pull request addresses issue #{issue_number}." if issue_number else "This pull request updates files."
