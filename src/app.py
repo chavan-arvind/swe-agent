@@ -1,10 +1,11 @@
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
-from src.github_utils import setup_github_client, parse_repo_url, get_repo_issues
+from src.github_utils import setup_github_client, parse_repo_url, get_repo_issues, setup_codespace_for_testing
 from src.openai_utils import setup_openai_client, plan_issue_resolution
 from src.file_utils import get_local_repo_structure, save_repo_structure, get_file_content
 from src.models import ResolutionPlan
 from src.issue_resolution import parse_ai_response, modify_files, create_pull_request
+from src.branch_utils import setup_and_update_branch
 import sys
 
 app = Flask(__name__)
@@ -102,15 +103,16 @@ def resolve_issue():
         plan = ResolutionPlan(**plan_dict)
         
         modified_files = modify_files(repo, file_contents, plan)
-        pr = create_pull_request(repo, issue, modified_files)
+        success, message, pr_url = setup_and_update_branch(repo, modified_files, issue_number=issue.number)
         
-        if pr:
+        if success:
             return jsonify({
-                "message": "Pull request created successfully",
-                "pr_url": pr.html_url
+                "message": "New branch created with proposed changes and pull request created",
+                "details": message,
+                "pull_request_url": pr_url
             })
         else:
-            return jsonify({"error": "Failed to create pull request"}), 500
+            return jsonify({"error": "Failed to create branch, update files, or create pull request", "details": message}), 500
     except Exception as e:
         return jsonify({"error": f"Failed to resolve issue: {str(e)}"}), 500
 

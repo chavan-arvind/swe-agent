@@ -3,6 +3,7 @@ from github.GithubException import UnknownObjectException
 import os
 import sys
 import re
+import requests
 
 def setup_github_client():
     """Set up and return a GitHub client instance."""
@@ -45,5 +46,32 @@ def get_repo_issues(github_client, repo_name):
     except Exception as e:
         print(f"An unexpected error occurred: {str(e)}")
     return []
+
+def setup_codespace_for_testing(repo, branch="main"):
+    """Set up a Codespace for testing, run tests, and clean up."""
+    print(f"Setting up Codespace for testing branch: {branch}")
+    return setup_and_test_codespace(repo, branch)
+
+def get_repo_structure(github_client, repo_name):
+    """Fetch the repository structure from GitHub."""
+    try:
+        repo = github_client.get_repo(repo_name)
+        contents = repo.get_contents("")
+        structure = {"name": repo.name, "type": "directory", "children": []}
+        
+        def traverse_contents(contents, current_dir):
+            for content in contents:
+                if content.type == "dir":
+                    new_dir = {"name": content.name, "type": "directory", "children": []}
+                    current_dir["children"].append(new_dir)
+                    traverse_contents(repo.get_contents(content.path), new_dir)
+                else:
+                    current_dir["children"].append({"name": content.name, "type": "file"})
+        
+        traverse_contents(contents, structure)
+        return structure
+    except Exception as e:
+        print(f"An error occurred while fetching repository structure: {str(e)}")
+        return None
 
 # Add other GitHub-related functions here

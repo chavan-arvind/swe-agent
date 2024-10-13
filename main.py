@@ -1,10 +1,20 @@
 import sys
 from dotenv import load_dotenv
-from src.github_utils import setup_github_client, parse_repo_url, get_repo_issues
+from github import GithubException
+from src.github_utils import (
+    setup_github_client,
+    parse_repo_url,
+    get_repo_issues,
+    setup_codespace_for_testing,
+    get_repo_structure
+)
 from src.openai_utils import setup_openai_client, plan_issue_resolution
 from src.file_utils import get_local_repo_structure, save_repo_structure, get_file_content
 from src.models import ResolutionPlan
 from src.issue_resolution import parse_ai_response, modify_files, create_pull_request
+from src.codespace_utils import setup_and_test_codespace
+from src.branch_utils import setup_and_update_branch  # Update this import
+import requests
 
 def display_issues(issues):
     """Display a list of issues with numbers for selection."""
@@ -45,7 +55,7 @@ def display_resolution_plan(plan: ResolutionPlan):
     for update in plan.documentation_updates:
         print(f"- {update}")
 
-def get_or_fetch_repo_structure(repo_name):
+def get_or_fetch_repo_structure(github_client, repo_name):
     """Get the repository structure from local file or fetch from GitHub if not available."""
     local_structure = get_local_repo_structure(repo_name)
     if local_structure:
@@ -53,7 +63,7 @@ def get_or_fetch_repo_structure(repo_name):
         return local_structure
     
     print("Fetching repository structure from GitHub...")
-    return get_repo_structure(repo_name)
+    return get_repo_structure(github_client, repo_name)
 
 def find_relevant_files(repo, issue_title, issue_body):
     """Find files that might be relevant to the issue based on keywords."""
@@ -98,7 +108,11 @@ def analyze_relevant_files(repo, relevant_files, max_file_size=100000):  # 100 K
                 if content:
                     file_contents[file_path] = content
         except GithubException as e:
-            print(f"Error analyzing file {file_path}: {e}")
+            print(f"GitHub API error for file {file_path}: {e}")
+        except requests.exceptions.RequestException as e:
+            print(f"Network error for file {file_path}: {e}")
+        except Exception as e:
+            print(f"Unexpected error for file {file_path}: {e}")
     return file_contents
 
 def main():
@@ -122,7 +136,7 @@ def main():
             continue
 
         # Get or fetch and save repository structure
-        repo_structure = get_or_fetch_repo_structure(repo_name)
+        repo_structure = get_or_fetch_repo_structure(github_client, repo_name)
         if repo_structure:
             save_repo_structure(repo_structure, repo_name)
         else:
@@ -167,17 +181,21 @@ def main():
             plan = ResolutionPlan(**plan_dict)
             display_resolution_plan(plan)
 
-            # Ask user if they want to proceed with creating a pull request
-            create_pr = input("Do you want to create a pull request to resolve this issue? (y/n): ").lower().strip()
+            # Ask user if they want to proceed with creating a new branch and pull request
+            create_pr = input("Do you want to create a new branch and pull request with the proposed changes? (y/n): ").lower().strip()
             if create_pr == 'y':
                 modified_files = modify_files(repo, file_contents, plan)
-                pr = create_pull_request(repo, selected_issue, modified_files)
-                if pr:
-                    print(f"Pull request created successfully. You can view it at: {pr.html_url}")
+                success, message, pr_url = setup_and_update_branch(repo, modified_files, issue_number=selected_issue.number)
+                if success:
+                    print(message)
+                    if pr_url:
+                        print(f"Pull request created: {pr_url}")
+                    else:
+                        print("Pull request creation failed, but branch was created with changes.")
                 else:
-                    print("Failed to create pull request.")
+                    print(f"Failed to create branch and update files: {message}")
             else:
-                print("Pull request creation skipped.")
+                print("Branch and pull request creation skipped.")
 
             print("\nToken Usage:")
             print(f"Prompt tokens: {token_usage['prompt_tokens']}")
@@ -185,6 +203,9 @@ def main():
             print(f"Total tokens: {token_usage['total_tokens']}")
         except Exception as e:
             print(f"An error occurred: {str(e)}")
+            import traceback
+            print("Traceback:")
+            print(traceback.format_exc())
         print("\n---\n")
 
 if __name__ == "__main__":
